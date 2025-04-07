@@ -19,6 +19,10 @@ class ActorCritic(nn.Module):
         self,
         num_actor_obs,
         num_critic_obs,
+        num_one_step_obs,
+        num_one_step_critic_obs,
+        actor_history_length,
+        critic_history_length,
         num_actions,
         actor_hidden_dims=[256, 256, 256],
         critic_hidden_dims=[256, 256, 256],
@@ -35,8 +39,45 @@ class ActorCritic(nn.Module):
         super().__init__()
         activation = resolve_nn_activation(activation)
 
-        mlp_input_dim_a = num_actor_obs
+        self.num_actor_obs = num_actor_obs
+        self.num_critic_obs = num_critic_obs
+        self.num_one_step_obs = num_one_step_obs
+        self.num_one_step_critic_obs = num_one_step_critic_obs
+        self.actor_history_length = actor_history_length
+        self.critic_history_length = critic_history_length
+        self.actor_proprioceptive_obs_length = self.actor_history_length * self.num_one_step_obs
+        self.critic_proprioceptive_obs_length = self.critic_history_length * self.num_one_step_critic_obs
+        self.num_height_points = self.num_actor_obs - self.actor_proprioceptive_obs_length
+        self.num_critic_height_points = self.num_critic_obs - self.critic_proprioceptive_obs_length
+        self.actor_use_height = True if self.num_height_points > 0 else False
+        self.num_actions = num_actions
+        
+        self.history_latent_dim = 32
+        self.terrain_latent_dim = 32
+
+        if self.actor_use_height:
+            mlp_input_dim_a = num_one_step_obs + self.history_latent_dim + self.terrain_latent_dim
+        else:
+            mlp_input_dim_a = num_one_step_obs + self.history_latent_dim
         mlp_input_dim_c = num_critic_obs
+        
+        self.history_encoder = nn.Sequential(
+            nn.Linear(self.num_one_step_obs * self.actor_history_length, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, self.history_latent_dim),
+        )
+        
+        if self.actor_use_height:
+            self.terrain_encoder = nn.Sequential(
+                nn.Linear(self.num_one_step_obs + self.num_height_points, 128),
+                nn.ReLU(),
+                nn.Linear(128, 64),
+                nn.ReLU(),
+                nn.Linear(64, self.terrain_latent_dim),
+            )
+        
         # Policy
         actor_layers = []
         actor_layers.append(nn.Linear(mlp_input_dim_a, actor_hidden_dims[0]))
@@ -63,6 +104,9 @@ class ActorCritic(nn.Module):
 
         print(f"Actor MLP: {self.actor}")
         print(f"Critic MLP: {self.critic}")
+        print(f'History Encoder: {self.history_encoder}')
+        if self.actor_use_height:
+            print(f'Terrain Encoder: {self.terrain_encoder}')
 
         # Action noise
         self.noise_std_type = noise_std_type
@@ -104,18 +148,20 @@ class ActorCritic(nn.Module):
     def entropy(self):
         return self.distribution.entropy().sum(dim=-1)
 
-    def update_distribution(self, observations):
+    def update_distribution(self, obs_history):
         # compute mean
-        mean = self.actor(observations)
-        # compute standard deviation
-        if self.noise_std_type == "scalar":
-            std = self.std.expand_as(mean)
-        elif self.noise_std_type == "log":
-            std = torch.exp(self.log_std).expand_as(mean)
+        history_latent = self.history_encoder(obs_history[:, :-self.num_height_points])
+        
+        if self.actor_use_height:
+            terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points+self.num_one_step_obs):])
+            # terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points):].reshape(-1, 1, 32, 32))
+            actor_input = torch.cat((obs_history[:,-(self.num_height_points + self.num_one_step_obs):-self.num_height_points], history_latent, terrain_latent), dim=-1)
         else:
-            raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
-        # create distribution
-        self.distribution = Normal(mean, std)
+            actor_input = torch.cat((obs_history[:,-(self.num_one_step_obs):], history_latent), dim=-1)
+        action_mean = self.actor(actor_input)
+        if torch.any(torch.isnan(action_mean)) or torch.any(torch.isnan(self.std)):
+            import ipdb; ipdb.set_trace()
+        self.distribution = Normal(action_mean, action_mean*0. + self.std)
 
     def act(self, observations, **kwargs):
         self.update_distribution(observations)
@@ -124,9 +170,16 @@ class ActorCritic(nn.Module):
     def get_actions_log_prob(self, actions):
         return self.distribution.log_prob(actions).sum(dim=-1)
 
-    def act_inference(self, observations):
-        actions_mean = self.actor(observations)
-        return actions_mean
+    def act_inference(self, obs_history):
+        history_latent = self.history_encoder(obs_history[:, :-self.num_height_points])
+        if self.actor_use_height:
+            terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points+self.num_one_step_obs):])
+            # terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points):].reshape(-1, 1, 32, 32))
+            actor_input = torch.cat((obs_history[:,-(self.num_height_points + self.num_one_step_obs):-self.num_height_points], history_latent, terrain_latent), dim=-1)
+        else:
+            actor_input = torch.cat((obs_history[:,-self.num_one_step_obs:], history_latent), dim=-1)
+        action_mean = self.actor(actor_input)
+        return action_mean
 
     def evaluate(self, critic_observations, **kwargs):
         value = self.critic(critic_observations)

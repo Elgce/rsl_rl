@@ -30,7 +30,7 @@ class WandbSummaryWriter(SummaryWriter):
             raise KeyError("Please specify wandb_project in the runner config, e.g. legged_gym.")
 
         try:
-            entity = os.environ["WANDB_USERNAME"]
+            entity = cfg['wandb_user']
         except KeyError:
             entity = None
 

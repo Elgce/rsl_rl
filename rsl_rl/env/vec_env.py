@@ -42,6 +42,12 @@ class VecEnv(ABC):
 
     num_envs: int
     """Number of environments."""
+    
+    num_obs: int
+    """Number of observations."""
+
+    num_privileged_obs: int
+    """Number of privileged observations."""
 
     num_actions: int
     """Number of actions."""
@@ -54,8 +60,22 @@ class VecEnv(ABC):
     lengths.
     """
 
+    privileged_obs_buf: torch.Tensor
+    """Buffer for privileged observations."""
+
+    obs_buf: torch.Tensor
+    """Buffer for observations."""
+
+    rew_buf: torch.Tensor
+    """Buffer for rewards."""
+
+    reset_buf: torch.Tensor
+    """Buffer for reset flags."""
+
     episode_length_buf: torch.Tensor
     """Buffer for current episode lengths."""
+
+    extras: dict
 
     device: torch.device
     """Device to use."""

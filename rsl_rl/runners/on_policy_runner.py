@@ -28,7 +28,7 @@ class OnPolicyRunner:
     """On-policy runner for training and evaluation."""
 
     def __init__(self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device="cpu"):
-        self.cfg = train_cfg
+        self.cfg = train_cfg["runner"]
         self.alg_cfg = train_cfg["algorithm"]
         self.policy_cfg = train_cfg["policy"]
         self.device = device
@@ -46,31 +46,37 @@ class OnPolicyRunner:
             raise ValueError(f"Training type not found for algorithm {self.alg_cfg['class_name']}.")
 
         # resolve dimensions of observations
-        obs, extras = self.env.get_observations()
-        num_obs = obs.shape[1]
+        if self.env.num_privileged_obs is not None:
+            num_critic_obs = self.env.num_privileged_obs
+        else:
+            num_critic_obs = self.env.num_obs
+
+        self.num_actor_obs = self.env.num_obs
+        self.num_critic_obs = num_critic_obs
+        self.actor_history_length = self.env.num_actor_history
+        self.critic_history_length = self.env.num_critic_history
 
         # resolve type of privileged observations
         if self.training_type == "rl":
-            if "critic" in extras["observations"]:
-                self.privileged_obs_type = "critic"  # actor-critic reinforcement learnig, e.g., PPO
-            else:
-                self.privileged_obs_type = None
-        if self.training_type == "distillation":
-            if "teacher" in extras["observations"]:
-                self.privileged_obs_type = "teacher"  # policy distillation
-            else:
-                self.privileged_obs_type = None
-
-        # resolve dimensions of privileged observations
-        if self.privileged_obs_type is not None:
-            num_privileged_obs = extras["observations"][self.privileged_obs_type].shape[1]
-        else:
-            num_privileged_obs = num_obs
+            self.privileged_obs_type = "critic"  # actor-critic reinforcement learnig, e.g., PPO
+            
+        # if self.training_type == "distillation":
+        #     if "teacher" in extras["observations"]:
+        #         self.privileged_obs_type = "teacher"  # policy distillation
+        #     else:
+        #         self.privileged_obs_type = None
 
         # evaluate the policy class
         policy_class = eval(self.policy_cfg.pop("class_name"))
         policy: ActorCritic | ActorCriticRecurrent | StudentTeacher | StudentTeacherRecurrent = policy_class(
-            num_obs, num_privileged_obs, self.env.num_actions, **self.policy_cfg
+            self.num_actor_obs, 
+            self.num_critic_obs, 
+            self.env.num_one_step_obs,
+            self.env.num_one_step_privileged_obs,
+            self.env.num_actor_history,
+            self.env.num_critic_history,
+            self.env.num_actions, 
+            **self.policy_cfg
         ).to(self.device)
 
         # resolve dimension of rnd gated state
@@ -100,8 +106,8 @@ class OnPolicyRunner:
         self.save_interval = self.cfg["save_interval"]
         self.empirical_normalization = self.cfg["empirical_normalization"]
         if self.empirical_normalization:
-            self.obs_normalizer = EmpiricalNormalization(shape=[num_obs], until=1.0e8).to(self.device)
-            self.privileged_obs_normalizer = EmpiricalNormalization(shape=[num_privileged_obs], until=1.0e8).to(
+            self.obs_normalizer = EmpiricalNormalization(shape=[self.num_actor_obs], until=1.0e8).to(self.device)
+            self.privileged_obs_normalizer = EmpiricalNormalization(shape=[self.num_critic_obs], until=1.0e8).to(
                 self.device
             )
         else:
@@ -113,8 +119,8 @@ class OnPolicyRunner:
             self.training_type,
             self.env.num_envs,
             self.num_steps_per_env,
-            [num_obs],
-            [num_privileged_obs],
+            [self.env.num_obs],
+            [self.env.num_privileged_obs],
             [self.env.num_actions],
         )
 
@@ -165,7 +171,8 @@ class OnPolicyRunner:
 
         # start learning
         obs, extras = self.env.get_observations()
-        privileged_obs = extras["observations"].get(self.privileged_obs_type, obs)
+        privileged_obs, extras = self.env.get_privileged_observations()
+        privileged_obs = privileged_obs if privileged_obs is not None else obs
         obs, privileged_obs = obs.to(self.device), privileged_obs.to(self.device)
         self.train_mode()  # switch to train mode (for dropout for example)
 
