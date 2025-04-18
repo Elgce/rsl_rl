@@ -60,11 +60,12 @@ class OnPolicyRunner:
         if self.training_type == "rl":
             self.privileged_obs_type = "critic"  # actor-critic reinforcement learnig, e.g., PPO
             
-        # if self.training_type == "distillation":
-        #     if "teacher" in extras["observations"]:
-        #         self.privileged_obs_type = "teacher"  # policy distillation
-        #     else:
-        #         self.privileged_obs_type = None
+        if self.training_type == "distillation":
+            self.privileged_obs_type = "teacher"
+            # if "teacher" in extras["observations"]:
+            #     self.privileged_obs_type = "teacher"  # policy distillation
+            # else:
+            #     self.privileged_obs_type = None
 
         # evaluate the policy class
         policy_class = eval(self.policy_cfg.pop("class_name"))
@@ -78,6 +79,9 @@ class OnPolicyRunner:
             self.env.num_actions, 
             **self.policy_cfg
         ).to(self.device)
+
+        loaded_dict = torch.load("/ssd/benqingwei/HUSSAR/Legged_Lab/legged_lab/scripts/logs/g1_rough/2025-04-18_12-34-02/model_5000.pt", weights_only=False)
+        policy.load_state_dict(loaded_dict["model_state_dict"])
 
         # resolve dimension of rnd gated state
         if "rnd_cfg" in self.alg_cfg and self.alg_cfg["rnd_cfg"] is not None:
@@ -99,7 +103,7 @@ class OnPolicyRunner:
 
         # initialize algorithm
         alg_class = eval(self.alg_cfg.pop("class_name"))
-        self.alg: PPO | Distillation = alg_class(policy, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg)
+        self.alg: PPO | Distillation = alg_class(policy, device=self.device, multi_gpu_cfg=self.multi_gpu_cfg)#, **self.alg_cfg)
 
         # store training configuration
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
@@ -113,7 +117,6 @@ class OnPolicyRunner:
         else:
             self.obs_normalizer = torch.nn.Identity().to(self.device)  # no normalization
             self.privileged_obs_normalizer = torch.nn.Identity().to(self.device)  # no normalization
-
         # init storage and model
         self.alg.init_storage(
             self.training_type,
@@ -349,8 +352,10 @@ class OnPolicyRunner:
             # everything else
             self.writer.add_scalar("Train/mean_reward", statistics.mean(locs["rewbuffer"]), locs["it"])
             self.writer.add_scalar("Train/mean_episode_length", statistics.mean(locs["lenbuffer"]), locs["it"])
+            self.writer.add_scalar("Train/mean_behavior_mse", locs["loss_dict"]["behavior"], locs["it"])
             if self.logger_type != "wandb":  # wandb does not support non-integer x-axis logging
                 self.writer.add_scalar("Train/mean_reward/time", statistics.mean(locs["rewbuffer"]), self.tot_time)
+                self.writer.add_scalar("Train/mean_behavior_mse", locs["loss_dict"]["behavior"], self.tot_time)
                 self.writer.add_scalar(
                     "Train/mean_episode_length/time", statistics.mean(locs["lenbuffer"]), self.tot_time
                 )

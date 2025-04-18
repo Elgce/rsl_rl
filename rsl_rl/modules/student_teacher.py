@@ -10,7 +10,7 @@ import torch.nn as nn
 from torch.distributions import Normal
 
 from rsl_rl.utils import resolve_nn_activation
-
+from rsl_rl.modules.depthencoder import DepthEncoder
 
 class StudentTeacher(nn.Module):
     is_recurrent = False
@@ -19,6 +19,10 @@ class StudentTeacher(nn.Module):
         self,
         num_student_obs,
         num_teacher_obs,
+        num_one_step_student_obs,
+        num_one_step_teacher_obs,
+        student_history_length,
+        teacher_history_length,
         num_actions,
         student_hidden_dims=[256, 256, 256],
         teacher_hidden_dims=[256, 256, 256],
@@ -35,10 +39,33 @@ class StudentTeacher(nn.Module):
         activation = resolve_nn_activation(activation)
         self.loaded_teacher = False  # indicates if teacher has been loaded
 
-        mlp_input_dim_s = num_student_obs
-        mlp_input_dim_t = num_teacher_obs
+        self.num_student_obs = num_student_obs
+        self.num_teacher_obs = num_teacher_obs
+        self.num_one_step_student_obs = num_one_step_student_obs
+        self.num_one_step_teacher_obs = num_one_step_teacher_obs
+        self.student_history_length = student_history_length
+        self.teacher_history_length = teacher_history_length
+        self.student_propriceptive_obs_length = self.num_one_step_student_obs * self.student_history_length
+        self.teacher_propriceptive_obs_length = self.num_one_step_teacher_obs * self.teacher_history_length
+        self.num_student_height_points = self.num_student_obs - self.student_propriceptive_obs_length
+        self.num_teacher_height_points = self.num_teacher_obs - self.teacher_propriceptive_obs_length
+        self.num_actions = num_actions
+
+        self.history_latent_dim = 32
+        self.terrain_latent_dim = 32
 
         # student
+        mlp_input_dim_s = self.num_one_step_student_obs + self.history_latent_dim + self.terrain_latent_dim
+        self.student_history_encoder = nn.Sequential(
+            nn.Linear(self.num_one_step_student_obs * self.student_history_length, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, self.history_latent_dim),
+        )
+        
+        self.student_terrain_encoder = DepthEncoder(latent_dim=self.terrain_latent_dim)
+        
         student_layers = []
         student_layers.append(nn.Linear(mlp_input_dim_s, student_hidden_dims[0]))
         student_layers.append(activation)
@@ -49,8 +76,28 @@ class StudentTeacher(nn.Module):
                 student_layers.append(nn.Linear(student_hidden_dims[layer_index], student_hidden_dims[layer_index + 1]))
                 student_layers.append(activation)
         self.student = nn.Sequential(*student_layers)
+        print("====================================== Student Nerwork ======================================")
+        print(f"Student MLP: {self.student}")
+        print(f"Student History Encoder: {self.student_history_encoder}")
+        print(f"Student Terrain Encoder: {self.student_terrain_encoder}")
 
         # teacher
+        mlp_input_dim_t = self.num_one_step_teacher_obs + self.history_latent_dim + self.terrain_latent_dim
+        self.teacher_history_encoder = nn.Sequential(
+            nn.Linear(self.num_one_step_teacher_obs * self.teacher_history_length, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, self.history_latent_dim),
+        )
+        self.teacher_terrain_encoder = nn.Sequential(
+            nn.Linear(self.num_one_step_teacher_obs + self.num_teacher_height_points, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, self.terrain_latent_dim),
+        )
+        
         teacher_layers = []
         teacher_layers.append(nn.Linear(mlp_input_dim_t, teacher_hidden_dims[0]))
         teacher_layers.append(activation)
@@ -63,8 +110,10 @@ class StudentTeacher(nn.Module):
         self.teacher = nn.Sequential(*teacher_layers)
         self.teacher.eval()
 
-        print(f"Student MLP: {self.student}")
+        print("====================================== Teacher Nerwork ======================================")
         print(f"Teacher MLP: {self.teacher}")
+        print(f"Teacher History Encoder: {self.teacher_history_encoder}")
+        print(f"Teacher Terrain Encoder: {self.teacher_terrain_encoder}")
 
         # action noise
         self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
@@ -91,20 +140,29 @@ class StudentTeacher(nn.Module):
         return self.distribution.entropy().sum(dim=-1)
 
     def update_distribution(self, observations):
-        mean = self.student(observations)
-        self.distribution = Normal(mean, mean * 0.0 + self.std)
+        history_latent = self.student_history_encoder(observations[:, :-self.num_student_height_points])
+        terrain_latent = self.student_terrain_encoder(observations[:, -(self.num_student_height_points):].reshape(-1, 1, 128, 128))
+        student_input = torch.cat((observations[:, -(self.num_student_height_points + self.num_one_step_student_obs):-self.num_student_height_points], history_latent, terrain_latent), dim=-1)
+        action_mean = self.student(student_input)
+        self.distribution = Normal(action_mean, action_mean * 0.0 + self.std)
 
     def act(self, observations):
         self.update_distribution(observations)
         return self.distribution.sample()
 
     def act_inference(self, observations):
-        actions_mean = self.student(observations)
-        return actions_mean
+        history_latent = self.student_history_encoder(observations[:, :-self.num_student_height_points])
+        terrain_latent = self.student_terrain_encoder(observations[:, -(self.num_student_height_points):].reshape(-1, 1, 128, 128))
+        student_input = torch.cat((observations[:, -(self.num_student_height_points + self.num_one_step_student_obs):-self.num_student_height_points], history_latent, terrain_latent), dim=-1)
+        action_mean = self.student(student_input)
+        return action_mean
 
     def evaluate(self, teacher_observations):
         with torch.no_grad():
-            actions = self.teacher(teacher_observations)
+            history_latent = self.teacher_history_encoder(teacher_observations[:, :-self.num_teacher_height_points])
+            terrain_latent = self.teacher_terrain_encoder(teacher_observations[:, -(self.num_teacher_height_points + self.num_one_step_teacher_obs):])
+            teacher_input = torch.cat((teacher_observations[:, -(self.num_teacher_height_points + self.num_one_step_teacher_obs):-self.num_teacher_height_points], history_latent, terrain_latent), dim=-1)
+            actions = self.teacher(teacher_input)
         return actions
 
     def load_state_dict(self, state_dict, strict=True):
@@ -123,18 +181,47 @@ class StudentTeacher(nn.Module):
         # check if state_dict contains teacher and student or just teacher parameters
         if any("actor" in key for key in state_dict.keys()):  # loading parameters from rl training
             # rename keys to match teacher and remove critic parameters
-            teacher_state_dict = {}
-            for key, value in state_dict.items():
-                if "actor." in key:
-                    teacher_state_dict[key.replace("actor.", "")] = value
-            self.teacher.load_state_dict(teacher_state_dict, strict=strict)
-            # also load recurrent memory if teacher is recurrent
-            if self.is_recurrent and self.teacher_recurrent:
-                raise NotImplementedError("Loading recurrent memory for the teacher is not implemented yet")  # TODO
-            # set flag for successfully loading the parameters
+            # teacher_state_dict = {}
+            # for key, value in state_dict.items():
+            #     if "actor." in key:
+            #         teacher_state_dict[key.replace("actor.", "")] = value
+            # self.teacher.load_state_dict(teacher_state_dict, strict=strict)
+            # # also load recurrent memory if teacher is recurrent
+            # if self.is_recurrent and self.teacher_recurrent:
+            #     raise NotImplementedError("Loading recurrent memory for the teacher is not implemented yet")  # TODO
+            # # set flag for successfully loading the parameters
+            # self.loaded_teacher = True
+            # self.teacher.eval()
+            # return False
+            
+            history_encoder_params = {
+                key.replace("history_encoder.", ""): value
+                for key, value in state_dict.items()
+                if key.startswith("history_encoder")
+            }
+            self.teacher_history_encoder.load_state_dict(history_encoder_params)
+
+
+            terrain_encoder_params = {
+                key.replace("terrain_encoder.", ""): value
+                for key, value in state_dict.items()
+                if key.startswith("terrain_encoder")
+            }
+            self.teacher_terrain_encoder.load_state_dict(terrain_encoder_params)
+
+            teacher_params = {
+                key.replace("actor.", ""): value
+                for key, value in state_dict.items()
+                if key.startswith("actor")
+            }
+            self.teacher.load_state_dict(teacher_params)
+            
             self.loaded_teacher = True
             self.teacher.eval()
+            self.teacher_history_encoder.eval()
+            self.teacher_terrain_encoder.eval()
             return False
+            
         elif any("student" in key for key in state_dict.keys()):  # loading parameters from distillation training
             super().load_state_dict(state_dict, strict=strict)
             # set flag for successfully loading the parameters

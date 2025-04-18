@@ -24,6 +24,8 @@ class ActorCritic(nn.Module):
         num_one_step_critic_obs,
         actor_history_length,
         critic_history_length,
+        
+        
         num_actions,
         actor_hidden_dims=[256, 256, 256],
         critic_hidden_dims=[256, 256, 256],

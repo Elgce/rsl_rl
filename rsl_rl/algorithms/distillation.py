@@ -22,10 +22,10 @@ class Distillation:
     def __init__(
         self,
         policy,
-        num_learning_epochs=1,
+        num_learning_epochs=30,
         gradient_length=15,
         learning_rate=1e-3,
-        loss_type="mse",
+        loss_type="huber",
         device="cpu",
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
@@ -88,7 +88,7 @@ class Distillation:
         # record the observations
         self.transition.observations = obs
         self.transition.privileged_observations = teacher_obs
-        return self.transition.actions
+        return self.transition.privileged_actions
 
     def process_env_step(self, rewards, dones, infos):
         # record the rewards and dones
@@ -114,7 +114,10 @@ class Distillation:
                 actions = self.policy.act_inference(obs)
 
                 # behavior cloning loss
-                behavior_loss = self.loss_fn(actions, privileged_actions)
+                # tanh_actions = torch.tanh(actions/4)
+                # tanh_privileged_actions = torch.tanh(privileged_actions/4)
+                
+                behavior_loss = self.loss_fn(actions * 10, privileged_actions * 10)
 
                 # total loss
                 loss = loss + behavior_loss
@@ -135,7 +138,7 @@ class Distillation:
                 self.policy.reset(dones.view(-1))
                 self.policy.detach_hidden_states(dones.view(-1))
 
-        mean_behavior_loss /= cnt
+        # mean_behavior_loss /= cnt
         self.storage.clear()
         self.last_hidden_states = self.policy.get_hidden_states()
         self.policy.detach_hidden_states()
