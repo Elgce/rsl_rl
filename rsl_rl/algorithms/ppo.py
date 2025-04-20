@@ -188,6 +188,7 @@ class PPO:
         mean_value_loss = 0
         mean_surrogate_loss = 0
         mean_entropy = 0
+        mean_cnn_div = 0
         # -- RND loss
         if self.rnd:
             mean_rnd_loss = 0
@@ -385,6 +386,14 @@ class PPO:
             # -- For PPO
             nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
             self.optimizer.step()
+            
+            # logging CNN effect
+            with torch.inference_mode():
+                zero_action = self.policy.zero_act_inference(obs_batch.detach().clone())
+                action = self.policy.act_inference(obs_batch.detach().clone())
+                mean_cnn_div += nn.functional.mse_loss(zero_action, action)
+            
+            
             # -- For RND
             if self.rnd_optimizer:
                 self.rnd_optimizer.step()
@@ -405,6 +414,7 @@ class PPO:
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
         mean_entropy /= num_updates
+        mean_cnn_div = mean_cnn_div.item() / num_updates
         # -- For RND
         if mean_rnd_loss is not None:
             mean_rnd_loss /= num_updates
@@ -419,6 +429,7 @@ class PPO:
             "value_function": mean_value_loss,
             "surrogate": mean_surrogate_loss,
             "entropy": mean_entropy,
+            "cnn_divergence": mean_cnn_div,
         }
         if self.rnd:
             loss_dict["rnd"] = mean_rnd_loss
