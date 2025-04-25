@@ -10,7 +10,7 @@ import torch.nn as nn
 from torch.distributions import Normal
 
 from rsl_rl.utils import resolve_nn_activation
-from rsl_rl.modules.depthencoder import DepthEncoder
+from rsl_rl.modules.depthencoder import DepthEncoder, DepthGRUEncoder
 
 
 class ActorCritic(nn.Module):
@@ -25,6 +25,7 @@ class ActorCritic(nn.Module):
         actor_history_length,
         critic_history_length,
         num_actions,
+        num_envs,
         actor_hidden_dims=[256, 256, 256],
         critic_hidden_dims=[256, 256, 256],
         activation="elu",
@@ -52,9 +53,9 @@ class ActorCritic(nn.Module):
         self.num_critic_height_points = self.num_critic_obs - self.critic_proprioceptive_obs_length
         self.actor_use_height = True if self.num_height_points > 0 else False
         self.num_actions = num_actions
-        
+        self.num_envs = num_envs
         self.history_latent_dim = 32
-        self.terrain_latent_dim = 32
+        self.terrain_latent_dim = 64
 
         if self.actor_use_height:
             mlp_input_dim_a = num_one_step_obs + self.history_latent_dim + self.terrain_latent_dim
@@ -71,7 +72,9 @@ class ActorCritic(nn.Module):
         )
         
         if self.actor_use_height:
-            self.terrain_encoder = DepthEncoder(latent_dim=self.terrain_latent_dim)
+            # self.terrain_encoder = DepthEncoder(latent_dim=self.terrain_latent_dim)
+            self.terrain_encoder = DepthGRUEncoder(latent_dim=self.terrain_latent_dim)
+            self.terrain_hidden: torch.Tensor = torch.zeros(self.num_envs, self.terrain_latent_dim)
             # self.terrain_encoder = nn.Sequential(
             #     nn.Linear(self.num_one_step_obs + self.num_height_points, 128),
             #     nn.ReLU(),
@@ -134,7 +137,8 @@ class ActorCritic(nn.Module):
         ]
 
     def reset(self, dones=None):
-        pass
+        if self.actor_use_height:
+            self.terrain_hidden = torch.zeros(self.num_envs, self.terrain_latent_dim)
 
     def forward(self):
         raise NotImplementedError
@@ -159,7 +163,11 @@ class ActorCritic(nn.Module):
             # terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points+self.num_one_step_obs):])
             # terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points):].reshape(-1, 1, 64, 64))
             # terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points):].reshape(-1, 1, 17, 11))*0.
-            terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points):].reshape(-1, 1, 16, 16, 16))
+            terrain_input = obs_history[:,-(self.num_height_points):].reshape(-1, 1, 16, 16, 16)
+            h_prev = self.terrain_hidden
+            h_next = self.terrain_encoder(terrain_input, h_prev)
+            self.terrain_hidden = h_next.detach()
+            terrain_latent = h_next
             actor_input = torch.cat((obs_history[:,-(self.num_height_points + self.num_one_step_obs):-self.num_height_points], history_latent, terrain_latent), dim=-1)
         else:
             actor_input = torch.cat((obs_history[:,-(self.num_one_step_obs):], history_latent), dim=-1)
@@ -180,8 +188,13 @@ class ActorCritic(nn.Module):
         if self.actor_use_height:
             # terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points+self.num_one_step_obs):])
             # terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points):].reshape(-1, 1, 64, 64))
-            terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points):].reshape(-1, 1, 16, 16, 16))
+            # terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points):].reshape(-1, 1, 16, 16, 16))
             # terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points):].reshape(-1, 1, 17, 11))
+            terrain_input = obs_history[:,-(self.num_height_points):].reshape(-1, 1, 16, 16, 16)
+            h_prev = self.terrain_hidden
+            h_next = self.terrain_encoder(terrain_input, h_prev)
+            self.terrain_hidden = h_next.detach()
+            terrain_latent = h_next
             actor_input = torch.cat((obs_history[:,-(self.num_height_points + self.num_one_step_obs):-self.num_height_points], history_latent, terrain_latent), dim=-1)
         else:
             actor_input = torch.cat((obs_history[:,-self.num_one_step_obs:], history_latent), dim=-1)
@@ -195,7 +208,12 @@ class ActorCritic(nn.Module):
                 # terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points+self.num_one_step_obs):])
                 # terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points):].reshape(-1, 1, 64, 64)) * 0.
                 # terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points):].reshape(-1, 1, 17, 11)) * 0.
-                terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points):].reshape(-1, 1, 16, 16, 16)) * 0.
+                # terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points):].reshape(-1, 1, 16, 16, 16)) * 0.
+                terrain_input = obs_history[:,-(self.num_height_points):].reshape(-1, 1, 16, 16, 16)
+                h_prev = self.terrain_hidden
+                h_next = self.terrain_encoder(terrain_input, h_prev)
+                self.terrain_hidden = h_next.detach()
+                terrain_latent = h_next * 0.
                 actor_input = torch.cat((obs_history[:,-(self.num_height_points + self.num_one_step_obs):-self.num_height_points], history_latent, terrain_latent), dim=-1)
             else:
                 actor_input = torch.cat((obs_history[:,-self.num_one_step_obs:], history_latent), dim=-1)

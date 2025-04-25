@@ -1,5 +1,8 @@
 import torch.nn as nn
 import torch
+
+from rsl_rl.utils import unpad_trajectories
+
 # class DepthEncoder(nn.Module):
 #     def __init__(self, latent_dim=64):
 #         super().__init__()
@@ -53,3 +56,22 @@ class DepthEncoder(nn.Module):
         x = self.conv_layers(x)
         # x = x.view(x.size(0), -1)
         return self.fc(x)
+    
+class DepthGRUEncoder(nn.Module):
+    def __init__(self, latent_dim=64):
+        super().__init__()
+        self.depth_encoder = DepthEncoder(latent_dim=latent_dim)
+        self.gru_cell = nn.GRUCell(input_size=latent_dim, hidden_size=latent_dim)
+        self.hidden_states = None
+        
+    def forward(self, x, masks=None, hidden_states=None):
+        batch_mode = masks is not None
+        if batch_mode:
+            if hidden_states is not None:
+                raise ValueError("Hiddent states not passed to memory module during polcy update")
+            out, _ = self.
+            # batch mode: needs saved hidden states
+        z = self.depth_encoder(x)
+        h_prev = h_prev.to(z.device)
+        h_next = self.gru_cell(z, h_prev)
+        return h_next

@@ -76,6 +76,7 @@ class OnPolicyRunner:
             self.env.num_actor_history,
             self.env.num_critic_history,
             self.env.num_actions, 
+            self.env.num_envs,
             **self.policy_cfg
         ).to(self.device)
 
