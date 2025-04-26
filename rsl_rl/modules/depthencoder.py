@@ -64,14 +64,42 @@ class DepthGRUEncoder(nn.Module):
         self.gru_cell = nn.GRUCell(input_size=latent_dim, hidden_size=latent_dim)
         self.hidden_states = None
         
-    def forward(self, x, masks=None, hidden_states=None):
-        batch_mode = masks is not None
-        if batch_mode:
-            if hidden_states is not None:
-                raise ValueError("Hiddent states not passed to memory module during polcy update")
-            out, _ = self.
-            # batch mode: needs saved hidden states
+    def forward(self, x, hidden_states=None):
+        B = x.shape[0]
+        device = x.device
+        if hidden_states is None:
+            h0 = self.hidden_states
+        else:
+            h0 = hidden_states
+        if h0 is None:
+            h0 = torch.zeros(B, self.depth_encoder.fc.out_features, device=device)
         z = self.depth_encoder(x)
-        h_prev = h_prev.to(z.device)
-        h_next = self.gru_cell(z, h_prev)
-        return h_next
+        try:
+            h1 = self.gru_cell(z, h0)
+        except:
+            import ipdb; ipdb.set_trace()
+        if hidden_states is None:
+            self.hidden_states = h1
+        return h1
+            
+    def reset(self, dones: torch.Tensor | None = None, hidden_states: torch.Tensor | None = None):
+        if dones is None:  # reset all hidden states
+            if hidden_states is None:
+                self.hidden_states = None
+            else:
+                self.hidden_states = hidden_states
+        else:
+            # reset hidden states of done environments
+            if self.hidden_states is not None:
+                self.hidden_states[dones, :] = 0.0
+    
+    def detach_hidden_states(self, dones: torch.Tensor | None = None):
+        if self.hidden_states is None:
+            return
+        if dones is None:  # detach all hidden states
+            self.hidden_states = self.hidden_states.detach()
+        else:  # detach hidden states of done environments
+            hs = self.hidden_states
+            hs[dones == 1, :] = hs[dones == 1, :].detach()
+            self.hidden_states = hs
+            

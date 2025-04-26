@@ -123,6 +123,7 @@ class OnPolicyRunner:
             [self.env.num_obs],
             [self.env.num_privileged_obs],
             [self.env.num_actions],
+            [64], # terrain hidden state
         )
 
         # Decide whether to disable logging

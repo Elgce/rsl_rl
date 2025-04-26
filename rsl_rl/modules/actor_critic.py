@@ -10,11 +10,11 @@ import torch.nn as nn
 from torch.distributions import Normal
 
 from rsl_rl.utils import resolve_nn_activation
-from rsl_rl.modules.depthencoder import DepthEncoder, DepthGRUEncoder
+from rsl_rl.modules.depthencoder import DepthGRUEncoder
 
 
 class ActorCritic(nn.Module):
-    is_recurrent = False
+    is_recurrent = True
 
     def __init__(
         self,
@@ -74,7 +74,6 @@ class ActorCritic(nn.Module):
         if self.actor_use_height:
             # self.terrain_encoder = DepthEncoder(latent_dim=self.terrain_latent_dim)
             self.terrain_encoder = DepthGRUEncoder(latent_dim=self.terrain_latent_dim)
-            self.terrain_hidden: torch.Tensor = torch.zeros(self.num_envs, self.terrain_latent_dim)
             # self.terrain_encoder = nn.Sequential(
             #     nn.Linear(self.num_one_step_obs + self.num_height_points, 128),
             #     nn.ReLU(),
@@ -138,7 +137,7 @@ class ActorCritic(nn.Module):
 
     def reset(self, dones=None):
         if self.actor_use_height:
-            self.terrain_hidden = torch.zeros(self.num_envs, self.terrain_latent_dim)
+            self.terrain_encoder.reset(dones)
 
     def forward(self):
         raise NotImplementedError
@@ -155,68 +154,47 @@ class ActorCritic(nn.Module):
     def entropy(self):
         return self.distribution.entropy().sum(dim=-1)
 
-    def update_distribution(self, obs_history):
-        # compute mean
-        history_latent = self.history_encoder(obs_history[:, :-self.num_height_points])
-        
+    def update_distribution(self, obs_history, hidden_states=None):
+        history_latent = self.history_encoder(obs_history[..., :-self.num_height_points])
+
         if self.actor_use_height:
-            # terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points+self.num_one_step_obs):])
-            # terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points):].reshape(-1, 1, 64, 64))
-            # terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points):].reshape(-1, 1, 17, 11))*0.
-            terrain_input = obs_history[:,-(self.num_height_points):].reshape(-1, 1, 16, 16, 16)
-            h_prev = self.terrain_hidden
-            h_next = self.terrain_encoder(terrain_input, h_prev)
-            self.terrain_hidden = h_next.detach()
-            terrain_latent = h_next
-            actor_input = torch.cat((obs_history[:,-(self.num_height_points + self.num_one_step_obs):-self.num_height_points], history_latent, terrain_latent), dim=-1)
+            terrain_input = obs_history[...,-(self.num_height_points):].reshape(obs_history.shape[0], -1, 16, 16, 16)
+            terrain_latent = self.terrain_encoder(terrain_input, hidden_states)
+            actor_input = torch.cat((obs_history[...,-(self.num_height_points + self.num_one_step_obs):-self.num_height_points], history_latent, terrain_latent), dim=-1)
         else:
-            actor_input = torch.cat((obs_history[:,-(self.num_one_step_obs):], history_latent), dim=-1)
+            actor_input = torch.cat((obs_history[...,-(self.num_one_step_obs):], history_latent), dim=-1)
         action_mean = self.actor(actor_input)
         if torch.any(torch.isnan(action_mean)) or torch.any(torch.isnan(self.std)):
             import ipdb; ipdb.set_trace()
         self.distribution = Normal(action_mean, action_mean*0. + self.std)
 
-    def act(self, observations, **kwargs):
-        self.update_distribution(observations)
+    def act(self, observations, hidden_states=None, **kwargs):
+        self.update_distribution(observations, hidden_states)
         return self.distribution.sample()
 
     def get_actions_log_prob(self, actions):
         return self.distribution.log_prob(actions).sum(dim=-1)
 
-    def act_inference(self, obs_history):
-        history_latent = self.history_encoder(obs_history[:, :-self.num_height_points])
+    def act_inference(self, obs_history, hidden_states=None):
+        history_latent = self.history_encoder(obs_history[..., :-self.num_height_points])
         if self.actor_use_height:
-            # terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points+self.num_one_step_obs):])
-            # terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points):].reshape(-1, 1, 64, 64))
-            # terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points):].reshape(-1, 1, 16, 16, 16))
-            # terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points):].reshape(-1, 1, 17, 11))
-            terrain_input = obs_history[:,-(self.num_height_points):].reshape(-1, 1, 16, 16, 16)
-            h_prev = self.terrain_hidden
-            h_next = self.terrain_encoder(terrain_input, h_prev)
-            self.terrain_hidden = h_next.detach()
-            terrain_latent = h_next
-            actor_input = torch.cat((obs_history[:,-(self.num_height_points + self.num_one_step_obs):-self.num_height_points], history_latent, terrain_latent), dim=-1)
+            terrain_input = obs_history[...,-(self.num_height_points):].reshape(obs_history.shape[0], -1, 16, 16, 16)
+            terrain_latent = self.terrain_encoder(terrain_input, hidden_states)
+            actor_input = torch.cat((obs_history[...,-(self.num_height_points + self.num_one_step_obs):-self.num_height_points], history_latent, terrain_latent), dim=-1)
         else:
-            actor_input = torch.cat((obs_history[:,-self.num_one_step_obs:], history_latent), dim=-1)
+            actor_input = torch.cat((obs_history[...,-self.num_one_step_obs:], history_latent), dim=-1)
         action_mean = self.actor(actor_input)
         return action_mean
     
-    def zero_act_inference(self, obs_history):
+    def zero_act_inference(self, obs_history, hidden_states=None):
         with torch.inference_mode():
-            history_latent = self.history_encoder(obs_history[:, :-self.num_height_points])
+            history_latent = self.history_encoder(obs_history[..., :-self.num_height_points])
             if self.actor_use_height:
-                # terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points+self.num_one_step_obs):])
-                # terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points):].reshape(-1, 1, 64, 64)) * 0.
-                # terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points):].reshape(-1, 1, 17, 11)) * 0.
-                # terrain_latent = self.terrain_encoder(obs_history[:,-(self.num_height_points):].reshape(-1, 1, 16, 16, 16)) * 0.
-                terrain_input = obs_history[:,-(self.num_height_points):].reshape(-1, 1, 16, 16, 16)
-                h_prev = self.terrain_hidden
-                h_next = self.terrain_encoder(terrain_input, h_prev)
-                self.terrain_hidden = h_next.detach()
-                terrain_latent = h_next * 0.
-                actor_input = torch.cat((obs_history[:,-(self.num_height_points + self.num_one_step_obs):-self.num_height_points], history_latent, terrain_latent), dim=-1)
+                terrain_input = obs_history[...,-(self.num_height_points):].reshape(obs_history.shape[0], -1, 16, 16, 16)
+                terrain_latent = self.terrain_encoder(terrain_input, hidden_states) * 0.
+                actor_input = torch.cat((obs_history[...,-(self.num_height_points + self.num_one_step_obs):-self.num_height_points], history_latent, terrain_latent), dim=-1)
             else:
-                actor_input = torch.cat((obs_history[:,-self.num_one_step_obs:], history_latent), dim=-1)
+                actor_input = torch.cat((obs_history[...,-self.num_one_step_obs:], history_latent), dim=-1)
             action_mean = self.actor(actor_input)
         return action_mean
 
@@ -241,3 +219,9 @@ class ActorCritic(nn.Module):
 
         super().load_state_dict(state_dict, strict=strict)
         return True
+
+    def get_hidden_states(self):
+        a_hidden = self.terrain_encoder.hidden_states
+        if a_hidden is not None:
+            a_hidden = a_hidden
+        return a_hidden

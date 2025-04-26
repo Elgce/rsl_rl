@@ -115,7 +115,7 @@ class PPO:
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
 
     def init_storage(
-        self, training_type, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, actions_shape
+        self, training_type, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, actions_shape, hidden_states_shape
     ):
         # create memory for RND as well :)
         if self.rnd:
@@ -130,6 +130,7 @@ class PPO:
             actor_obs_shape,
             critic_obs_shape,
             actions_shape,
+            hidden_states_shape,
             rnd_state_shape,
             self.device,
         )
@@ -200,11 +201,7 @@ class PPO:
         else:
             mean_symmetry_loss = None
 
-        # generator for mini batches
-        if self.policy.is_recurrent:
-            generator = self.storage.recurrent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
-        else:
-            generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
+        generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
 
         # iterate over batches
         for (
@@ -257,10 +254,10 @@ class PPO:
             # Recompute actions log prob and entropy for current batch of transitions
             # Note: we need to do this because we updated the policy with the new parameters
             # -- actor
-            self.policy.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
+            self.policy.act(obs_batch, hidden_states=hid_states_batch)
             actions_log_prob_batch = self.policy.get_actions_log_prob(actions_batch)
             # -- critic
-            value_batch = self.policy.evaluate(critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1])
+            value_batch = self.policy.evaluate(critic_obs_batch, masks=None, hidden_states=None)
             # -- entropy
             # we only keep the entropy of the first augmentation (the original one)
             mu_batch = self.policy.action_mean[:original_batch_size]
@@ -389,8 +386,8 @@ class PPO:
             
             # logging CNN effect
             with torch.inference_mode():
-                zero_action = self.policy.zero_act_inference(obs_batch.detach().clone())
-                action = self.policy.act_inference(obs_batch.detach().clone())
+                zero_action = self.policy.zero_act_inference(obs_batch.detach().clone(), hid_states_batch)
+                action = self.policy.act_inference(obs_batch.detach().clone(), hid_states_batch)
                 mean_cnn_div += nn.functional.mse_loss(zero_action, action)
             
             
