@@ -221,7 +221,6 @@ class OnPolicyRunner:
                         )
                     else:
                         privileged_obs = obs
-
                     # process the step
                     self.alg.process_env_step(rewards, dones, infos)
 

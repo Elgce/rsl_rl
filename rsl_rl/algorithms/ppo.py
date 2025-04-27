@@ -154,7 +154,6 @@ class PPO:
         # Note: we clone here because later on we bootstrap the rewards based on timeouts
         self.transition.rewards = rewards.clone()
         self.transition.dones = dones
-
         # Compute the intrinsic rewards and add to extrinsic rewards
         if self.rnd:
             # Obtain curiosity gates / observations from infos
@@ -200,7 +199,9 @@ class PPO:
             mean_symmetry_loss = 0
         else:
             mean_symmetry_loss = None
-
+        mean_estimation_loss = 0
+        mean_swap_loss = 0
+        
         generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
 
         # iterate over batches
@@ -303,6 +304,8 @@ class PPO:
                     for param_group in self.optimizer.param_groups:
                         param_group["lr"] = self.learning_rate
 
+            estimation_loss, swap_loss = self.policy.history_encoder.update(obs_batch[:original_batch_size], critic_obs_batch[:original_batch_size], lr=self.learning_rate)
+
             # Surrogate loss
             ratio = torch.exp(actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch))
             surrogate = -torch.squeeze(advantages_batch) * ratio
@@ -401,6 +404,8 @@ class PPO:
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
             mean_entropy += entropy_batch.mean().item()
+            mean_estimation_loss += estimation_loss.item()
+            mean_swap_loss += swap_loss.item()
             # -- RND loss
             if mean_rnd_loss is not None:
                 mean_rnd_loss += rnd_loss.item()
@@ -413,6 +418,8 @@ class PPO:
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
         mean_entropy /= num_updates
+        mean_estimation_loss /= num_updates
+        mean_swap_loss /= num_updates
         mean_cnn_div = mean_cnn_div.item() / num_updates
         # -- For RND
         if mean_rnd_loss is not None:
@@ -429,6 +436,8 @@ class PPO:
             "surrogate": mean_surrogate_loss,
             "entropy": mean_entropy,
             "cnn_divergence": mean_cnn_div,
+            "estimation_loss": mean_estimation_loss,
+            "swap_loss": mean_swap_loss
         }
         if self.rnd:
             loss_dict["rnd"] = mean_rnd_loss
