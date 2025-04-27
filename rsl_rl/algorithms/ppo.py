@@ -238,6 +238,7 @@ class PPO:
                 obs_batch, actions_batch = data_augmentation_func(
                     obs=obs_batch, actions=actions_batch, env=self.symmetry["_env"], obs_type="policy"
                 )
+                
                 critic_obs_batch, _ = data_augmentation_func(
                     obs=critic_obs_batch, actions=None, env=self.symmetry["_env"], obs_type="critic"
                 )
@@ -250,6 +251,7 @@ class PPO:
                 target_values_batch = target_values_batch.repeat(num_aug, 1)
                 advantages_batch = advantages_batch.repeat(num_aug, 1)
                 returns_batch = returns_batch.repeat(num_aug, 1)
+                hid_states_batch = hid_states_batch.repeat(num_aug, 1)
 
             # Recompute actions log prob and entropy for current batch of transitions
             # Note: we need to do this because we updated the policy with the new parameters
@@ -335,7 +337,7 @@ class PPO:
                     num_aug = int(obs_batch.shape[0] / original_batch_size)
 
                 # actions predicted by the actor for symmetrically-augmented observations
-                mean_actions_batch = self.policy.act_inference(obs_batch.detach().clone())
+                mean_actions_batch = self.policy.act_inference(obs_batch.detach().clone(), hid_states_batch.detach().clone())
 
                 # compute the symmetrically augmented actions
                 # note: we are assuming the first augmentation is the original one.
@@ -386,8 +388,8 @@ class PPO:
             
             # logging CNN effect
             with torch.inference_mode():
-                zero_action = self.policy.zero_act_inference(obs_batch.detach().clone(), hid_states_batch)
-                action = self.policy.act_inference(obs_batch.detach().clone(), hid_states_batch)
+                zero_action = self.policy.zero_act_inference(obs_batch.detach().clone(), hid_states_batch.detach().clone())
+                action = self.policy.act_inference(obs_batch.detach().clone(), hid_states_batch.detach().clone())
                 mean_cnn_div += nn.functional.mse_loss(zero_action, action)
             
             
