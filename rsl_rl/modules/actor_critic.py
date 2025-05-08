@@ -80,6 +80,7 @@ class ActorCritic(nn.Module):
             tar_hidden_dims=[256, 128],
         )
         
+        
         if self.actor_use_height:
             # self.terrain_encoder = DepthEncoder(latent_dim=self.terrain_latent_dim)
             self.terrain_encoder = DepthGRUEncoder(latent_dim=self.terrain_latent_dim)
